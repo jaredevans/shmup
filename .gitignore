@@ -1,0 +1,9 @@
+*.prg
+# keep the finished renders, but ignore other .wav files:
+*.wav
+!dies-irae.wav
+!musical_score.wav
+/tmp/
+.superpowers/
+*.pdf
+docs/
