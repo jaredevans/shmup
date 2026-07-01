@@ -320,6 +320,19 @@ mx_col
         ldy muxHW
         lda schColor,x
         sta $d027,y
+        ; per-sprite X-expand: set bit for this hw sprite if beam, else clear
+        ; (Y still = muxHW from color write above)
+        lda schExpand,x
+        beq mx_noexp
+        lda $d01d
+        ora msbset,y
+        sta $d01d
+        jmp mx_expdone
+mx_noexp
+        lda $d01d
+        and msbclr,y
+        sta $d01d
+mx_expdone
         ; advance schedule index + round-robin hw 1..7
         inc muxIdx
         ldy muxHW
@@ -337,10 +350,10 @@ mx_hwok
         sec
         sbc #MUX_LEAD
         cmp RASTER              ; desired vs current raster
-        bcc mux_loop            ; desired < current -> behind -> program now
+        bcc mux_ltramp          ; desired < current -> behind -> program now
         sta RASTER              ; arm next IRQ
         cmp RASTER              ; re-read current raster (race check)
-        bcc mux_loop            ; still behind -> loop
+        bcc mux_ltramp          ; still behind -> loop
         jmp mux_exit
 mux_done
         ; last sprite done -> hand off to scroll_irq at line 250
@@ -357,6 +370,8 @@ mux_exit
         tax
         pla
         rti
+mux_ltramp                      ; trampoline: mux_loop out of short-branch range after expand insert
+        jmp mux_loop
 
 ; --- init_hud_bar: fill rows 0-1 of BOTH buffers with char 2 + HUD color ---
 ; (temporary HUD marker; Task 2 replaces with score/lives digits)
@@ -945,6 +960,8 @@ bs_emit
         sta schXhi,y
         lda vsColor,x
         sta schColor,y
+        lda vsExpand,x
+        sta schExpand,y
         inc schBackBase
 bs_skip
         ldy sortJ
