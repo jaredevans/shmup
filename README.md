@@ -8,8 +8,9 @@ scratch in 6502 assembly. The whole game is a single source file (`scroll.asm`),
 ## Gameplay
 
 Pilot a ship through a continuously scrolling starfield, dodging and destroying waves of enemies.
-Rack up points, survive enemy fire, and every five kills a multi-part **boss** sweeps in — beat it
-for a score bonus and the waves resume.
+Tap to fire, or hold to charge a piercing **beam** for the tougher moments. Rack up points, survive
+enemy fire, and every five kills a multi-part **boss** sweeps in — beat it for a score bonus and the
+waves resume.
 
 ### Demo
 
@@ -23,13 +24,19 @@ for a score bonus and the waves resume.
 | `J` | Move left |
 | `K` | Move down |
 | `L` | Move right |
-| `Space` | Fire |
+| `Space` (tap) | Fire a normal shot |
+| `Space` (hold, then release) | Charge and unleash the beam |
 
 ## Features
 
 - **Hardware smooth scrolling** — fine scroll via `$D016` plus a double-buffered coarse-flip, so the
   playfield scrolls pixel-by-pixel with no tearing.
-- **Player ship** — keyboard-controlled (IJKL), with rapid fire (Space) and up to 6 bullets on screen.
+- **Player ship** — keyboard-controlled (IJKL); tap Space for a single shot (up to 6 bullets on
+  screen), with no autofire.
+- **Charge beam** — an R-Type-style wave cannon: hold Space to charge (the ship's hull pulses, then
+  glows steady when ready) and release to fire a double-width, **piercing** beam that punches through
+  a whole row of enemies. The beam is drawn wide via VIC sprite X-expand (`$D01D`) carried through the
+  multiplexer, and drains the boss at most 1 HP per frame (no instakill).
 - **Sprite multiplexer** — a sorted, raster-driven multiplexer drives 15 virtual sprites from the
   C64's 8 hardware sprites (player, player bullets, enemies, enemy bullets).
 - **Enemies** — timed waves with multiple movement patterns (straight, sine, zig-zag) that shoot back.
