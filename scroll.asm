@@ -1433,47 +1433,53 @@ ueb_next
 ueb_done
         rts
 
-; update_bullets: fire on space (cooldown-gated) into a free slot 0..5; move live bullets
+; update_bullets: edge-based firing with charge state; move live bullets
 ; right; despawn past the right edge (X > 344 = $158).
 update_bullets
-        ; --- cooldown ---
-        lda fireCool
-        beq ub_canfire
-        dec fireCool
+        ; --- exploding player: no fire, reset charge, normal ship color ---
+        lda playerState
+        cmp #PS_EXPLODE
+        bne ub_input
+        lda #0
+        sta chargeTimer
+        sta prevSpace
+        jsr restore_ship_color
         jmp ub_move
-ub_canfire
+ub_input
         lda keyrow7
-        and #%00010000          ; space (active low)
-        bne ub_move             ; not pressed
-        ; find a free bullet slot 0..5
-        ldx #0
-ub_find
-        cpx #6
-        bcs ub_move             ; no free slot
-        lda vsActive,x
-        beq ub_spawn
-        inx
-        jmp ub_find
-ub_spawn
-        ; spawn at ship nose: X = player_x + 24, Y = player_y + 8
-        lda player_x
-        clc
-        adc #24
-        sta vsXlo,x
-        lda player_x_hi
-        adc #0
-        sta vsXhi,x
-        lda player_y
-        clc
-        adc #8
-        sta vsY,x
-        lda #7                  ; yellow
-        sta vsColor,x
+        and #%00010000          ; Space, active-low: 0 = DOWN
+        bne ub_up
+        ; ---- Space DOWN this frame ----
+        lda prevSpace
+        bne ub_hold             ; already down -> charging
+        jsr fire_normal_shot    ; rising edge -> one shot now
+        lda #0
+        sta chargeTimer
+        jmp ub_downend
+ub_hold
+        lda chargeTimer
+        cmp #CHARGE_MAX
+        bcs ub_downend          ; capped
+        inc chargeTimer
+ub_downend
         lda #1
-        sta vsActive,x
-        lda #6                  ; cooldown frames (tunable)
-        sta fireCool
-        jsr sfx_fire
+        sta prevSpace
+        jsr charge_feedback
+        jmp ub_move
+ub_up
+        ; ---- Space UP this frame ----
+        lda prevSpace
+        beq ub_move             ; was already up -> nothing to do
+        lda chargeTimer
+        cmp #CHARGE_THRESHOLD
+        bcc ub_upclear          ; not enough charge -> no beam
+        jsr fire_beam
+ub_upclear
+        lda #0
+        sta chargeTimer
+        sta prevSpace
+        jsr restore_ship_color
+        jmp ub_move
 ub_move
         ; move all live bullets (slots 0..5) right by 4; despawn past $158
         ldx #0
@@ -1501,12 +1507,88 @@ ub_mloop
 ub_kill
         lda #0
         sta vsActive,x
+        lda #0
+        sta vsExpand,x
         lda #255
         sta vsY,x               ; park (sorts last)
 ub_mnext
         inx
         jmp ub_mloop
 ub_done
+        rts
+
+; spawn_player_bullet: find free slot 0..5, spawn at ship nose using
+; bulColor / bulExpand. Plays sfx_fire. No-op if no free slot.
+spawn_player_bullet
+        ldx #0
+spb_find
+        cpx #6
+        bcs spb_none
+        lda vsActive,x
+        beq spb_do
+        inx
+        jmp spb_find
+spb_do
+        lda player_x
+        clc
+        adc #24
+        sta vsXlo,x
+        lda player_x_hi
+        adc #0
+        sta vsXhi,x
+        lda player_y
+        clc
+        adc #8
+        sta vsY,x
+        lda bulColor
+        sta vsColor,x
+        lda bulExpand
+        sta vsExpand,x
+        lda #1
+        sta vsActive,x
+        jsr sfx_fire
+spb_none
+        rts
+
+fire_normal_shot
+        lda #7                  ; yellow
+        sta bulColor
+        lda #0
+        sta bulExpand
+        jsr spawn_player_bullet
+        rts
+
+fire_beam
+        lda #BEAM_COLOR
+        sta bulColor
+        lda #1
+        sta bulExpand
+        jsr spawn_player_bullet
+        rts
+
+; charge_feedback: pulse SP0COL while charging, steady READY at threshold.
+charge_feedback
+        lda chargeTimer
+        cmp #CHARGE_THRESHOLD
+        bcs cf_ready
+        lda chargeTimer
+        and #%00001000          ; ~8-frame pulse
+        bne cf_alt
+        lda #SHIP_COLOR_NORMAL
+        sta SP0COL
+        rts
+cf_alt
+        lda #SHIP_COLOR_CHARGE
+        sta SP0COL
+        rts
+cf_ready
+        lda #SHIP_COLOR_READY
+        sta SP0COL
+        rts
+
+restore_ship_color
+        lda #SHIP_COLOR_NORMAL
+        sta SP0COL
         rts
 
 ; ---------------------------------------------------------------------
