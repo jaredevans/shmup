@@ -73,7 +73,7 @@ PS_INVULN       = 2
 GS_TITLE = 0
 GS_PLAY  = 1
 GS_OVER  = 2
-OVER_FRAMES = 120              ; frames to display GAME OVER before returning to title
+OVER_FRAMES = 250          ; ~5s GAME OVER + TOP SCORES screen (one byte; FIRE skips)
 
 ; --- charge beam ---
 CHARGE_THRESHOLD  = 40         ; frames held before release fires the beam
@@ -221,15 +221,8 @@ start_game
         sta bossState
         sta killCount
         sta chargeTimer          ; reset charge so a leftover charge can't fire on first release
-        ; mask IRQs during the buffer rebuild: copy_a_to_b shares zp_fsrc/zp_bdst
-        ; with the scroll IRQ's build_back_slice — an IRQ mid-copy repoints the
-        ; pointers and the resumed (zp),y writes walk past BUF_B's end into the
-        ; title letter sprites at $3C00 (boot's start runs this under sei too)
-        sei
-        jsr fill_front_from_map
-        jsr copy_a_to_b
-        jsr init_hud_bar
-        cli
+        jsr rebuild_playfield    ; sei-guarded (see helper); boot uses raw calls
+        jsr init_hud_bar         ; rows 0-1 only, absolute writes — no guard needed
         jsr init_sprites
         lda #PLAYER_LIVES
         sta lives
@@ -250,6 +243,18 @@ start_game
         lda #120
         sta player_y
         jsr write_player_sprite
+        rts
+
+; rebuild_playfield: sei-guarded map fill + A->B copy. copy_a_to_b shares
+; zp_fsrc/zp_bdst with the scroll IRQ's build_back_slice — an IRQ mid-copy
+; repoints the pointers and the resumed (zp),y writes walk past BUF_B's end
+; into the title letter sprites at $3C00. NOT for use at boot: `start` runs
+; under its own sei until init ends, and this cli would unmask IRQs early.
+rebuild_playfield
+        sei
+        jsr fill_front_from_map
+        jsr copy_a_to_b
+        cli
         rts
 
 ; =====================================================================
@@ -288,6 +293,7 @@ et_seed lda #0
         sta logoCurX,x
         dex
         bpl et_seed
+        jsr rebuild_playfield    ; wipe the frozen GAME OVER table; fresh starfield
         ; clear HUD rows 0-1 in both buffers so title shows only the prompt
         jsr clear_hud_rows
         lda #0
@@ -503,7 +509,11 @@ doh_cret
 scroll_irq
         lda VICIRQ
         sta VICIRQ
+        lda gameState            ; GS_OVER: freeze the world — no fine scroll,
+        cmp #GS_OVER             ; no row rebuild, no flip. frame_ready and the
+        beq scr_frozen           ; IRQ chain still run so over_update keeps ticking.
         jsr scroll_step
+scr_frozen
         inc frame_ready
         ; HUD region (top of next frame): 40-col, no fine scroll
         lda #D016_HUD
