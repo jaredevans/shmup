@@ -454,12 +454,34 @@ over_update
         lda #0
         sta BORDER
 ou_noflash
+        ; --- FIRE skips to the title (after a short lockout) ---
+        lda overTimer
+        cmp #OVER_FRAMES-30
+        bcs ou_nofire            ; first ~0.6s: ignore fire (death mash guard)
+        lda #$7f
+        sta $dc00                ; select the space key row (CIA port A)
+        lda $dc01
+        sta keyrow7
+        and #%00010000           ; bit4: 0 = pressed (active low)
+        bne ou_spup
+        lda prevSpace
+        bne ou_nofire            ; held, not a fresh press
+        lda #1
+        sta prevSpace            ; consume the press (title won't re-edge on it)
+        jsr enter_title
+        rts
+ou_spup
+        lda #0
+        sta prevSpace
+ou_nofire
         lda overTimer            ; first OVER frame: wipe the HUD band here —
         cmp #OVER_FRAMES         ; on the death frame itself draw_hud still ran
         bne ou_noclear           ; after pu_gameover and re-stamped the digits
         jsr clear_hud_rows
+        jsr draw_score_table
 ou_noclear
         jsr draw_over_hud
+        jsr hs_flash
         dec overTimer
         bne ou_ret
         jsr enter_title          ; timer expired: back to animated title
@@ -498,6 +520,146 @@ doh_cl  lda label_gameover,x
         bne doh_cl
 doh_cret
         rts
+
+; draw_score_table: stamp TOP SCORES + 5 entries onto the frozen playfield
+; (both buffers + color RAM). Called once, on the first over_update frame.
+; Uses zp_dst (main-line only) — never zp_fsrc/zp_bdst (IRQ-shared).
+draw_score_table
+        ; --- heading: "TOP SCORES" white at row 8 col 15 ---
+        ldx #0
+dst_head
+        lda label_topscores,x
+        cmp #$ff
+        beq dst_entries
+        sta BUF_A+HS_HEAD_OFF,x
+        sta BUF_B+HS_HEAD_OFF,x
+        lda #1                   ; white
+        sta COLORRAM+HS_HEAD_OFF,x
+        inx
+        bne dst_head
+dst_entries
+        ; --- 5 entry rows: "<rank>  <6 digits>" light gray ---
+        lda #0
+        sta hsEntry              ; entry index 0..4
+dst_row
+        ldx hsEntry
+        lda hs_row_lo,x
+        sta zp_dst
+        lda hs_row_hi,x
+        sta zp_dst+1
+        ; rank digit (1..5) at col 0 of the row
+        txa
+        clc
+        adc #DIGIT_BASE+1        ; screen code for '1'+entry
+        ldy #0
+        jsr hs_put
+        ; two blank cols (screen code 0)
+        lda #0
+        ldy #1
+        jsr hs_put
+        lda #0
+        ldy #2
+        jsr hs_put
+        ; six score digits: hiScores entry bytes hi,mid,lo -> cols 3..8
+        lda hsEntry
+        asl
+        clc
+        adc hsEntry              ; A = entry*3
+        tax                      ; X = byte offset of entry
+        lda hiScores+2,x         ; high BCD byte -> digit cols 3,4
+        jsr dh_split
+        lda dhHi
+        ldy #3
+        jsr hs_put
+        lda dhLo
+        ldy #4
+        jsr hs_put
+        lda hsEntry              ; recompute entry*3 (no cross-jsr X assumptions)
+        asl
+        clc
+        adc hsEntry
+        tax
+        lda hiScores+1,x         ; mid byte -> cols 5,6
+        jsr dh_split
+        lda dhHi
+        ldy #5
+        jsr hs_put
+        lda dhLo
+        ldy #6
+        jsr hs_put
+        lda hsEntry
+        asl
+        clc
+        adc hsEntry
+        tax
+        lda hiScores+0,x         ; low byte -> cols 7,8
+        jsr dh_split
+        lda dhHi
+        ldy #7
+        jsr hs_put
+        lda dhLo
+        ldy #8
+        jsr hs_put
+        inc hsEntry
+        lda hsEntry
+        cmp #HS_COUNT
+        beq dst_done             ; branch-range trampoline: bne dst_row was >127 bytes back
+        jmp dst_row
+dst_done
+        rts
+
+; hs_put: write char A at column Y of the current entry row (zp_dst holds
+; the row's BUF_A address). Writes to BUF_A, BUF_B (+$34 page), and
+; COLORRAM (+$D4 page) with light gray (15). Preserves Y; restores zp_dst
+; to the BUF_A page.
+hs_put
+        sta hsChar
+        lda zp_dst+1
+        sta hsHi                 ; save BUF_A high byte
+        lda hsChar
+        sta (zp_dst),y           ; BUF_A
+        lda hsHi
+        clc
+        adc #$34
+        sta zp_dst+1
+        lda hsChar
+        sta (zp_dst),y           ; BUF_B
+        lda hsHi
+        clc
+        adc #$d4
+        sta zp_dst+1
+        lda #15                  ; light gray
+        sta (zp_dst),y           ; COLORRAM
+        lda hsHi
+        sta zp_dst+1             ; restore BUF_A high byte
+        rts
+
+; hs_flash: flash the newly-inserted row's color cells (yellow/white) on
+; titleFrame bit 3. No-op when the run didn't place (newRank = $ff).
+hs_flash
+        ldx newRank
+        cpx #HS_COUNT
+        bcs hf_ret               ; $ff (or out of range) -> no highlight
+        lda hs_row_lo,x
+        sta zp_dst
+        lda hs_row_hi,x
+        clc
+        adc #$d4                 ; COLORRAM page for this row
+        sta zp_dst+1
+        lda titleFrame
+        and #%00001000
+        beq hf_white
+        lda #7                   ; yellow
+        bne hf_paint
+hf_white
+        lda #1                   ; white
+hf_paint
+        ldy #8                   ; 9 cells: rank + 2 blanks + 6 digits
+hf_loop
+        sta (zp_dst),y
+        dey
+        bpl hf_loop
+hf_ret  rts
 
 ; =====================================================================
 ;  RASTER IRQ CHAIN
@@ -2514,7 +2676,7 @@ bc_upper
         lda upper_glyphs,x
         sta CHARSET + 39*8, x
         inx
-        cpx #88
+        cpx #96
         bne bc_upper
         rts
 
@@ -2734,6 +2896,7 @@ upper_glyphs
         !byte %01111100,%01100110,%01100110,%01111100,%01101100,%01100110,%01100110,%00000000  ; 47 R
         !byte %01111110,%00011000,%00011000,%00011000,%00011000,%00011000,%00011000,%00000000  ; 48 T
         !byte %01100110,%01100110,%01100110,%01100110,%01100110,%00111100,%00011000,%00000000  ; 49 V
+        !byte %00111100,%01100110,%01100000,%01100000,%01100000,%01100110,%00111100,%00000000  ; 50 C
 
 ; HUD label strings (screen codes; space = code 0)
 label_score !byte 26,27,28,29,30,38,0              ; "Score: "
@@ -2741,6 +2904,12 @@ label_ships !byte 26,31,32,33,34,0,35,30,36,37,38,0  ; "Ships left: "
 ; screen codes; space = 0. S reuses existing code 26.
 label_press    !byte 46,47,40,26,26,0,41,43,47,40,0,48,45,0,26,48,39,47,48,$ff  ; "PRESS FIRE TO START" ($ff terminator; interior 0=space)
 label_gameover !byte 42,39,44,40,0,45,49,40,47,$ff                              ; "GAME OVER" ($ff terminator)
+label_topscores !byte 48,45,46,0,26,50,45,47,40,26,$ff                        ; "TOP SCORES" ($ff terminator)
+; BUF_A addresses of the 5 table entry rows (rows 10,12,14,16,18, col 15).
+; BUF_B = same + $3400 (add $34 to the high byte); COLORRAM = same + $D400.
+hs_row_lo !for i,0,4 { !byte <(BUF_A + (10+i*2)*40 + 15) }
+hs_row_hi !for i,0,4 { !byte >(BUF_A + (10+i*2)*40 + 15) }
+HS_HEAD_OFF = 8*40 + 15    ; heading "TOP SCORES" at row 8, col 15
 
 ; =====================================================================
 ;  MAP DATA (column-major, 25 bytes/column), same generator as stage 1
@@ -2886,6 +3055,9 @@ flashTimer  !byte 0        ; border flash countdown (game over)
 overTimer   !byte 0        ; GAME OVER display countdown (OVER_FRAMES -> 0)
 hiScores    !fill 15,0     ; top-5 scores, 3-byte BCD each (lo,mid,hi), entry 0 = rank 1
 newRank     !byte $ff      ; rank (0-4) the last run entered at; $ff = didn't place
+hsEntry     !byte 0        ; draw_score_table: current entry 0..4
+hsChar      !byte 0        ; hs_put scratch: char being written
+hsHi        !byte 0        ; hs_put scratch: saved BUF_A page
 siStop      !byte 0        ; score_insert scratch: byte offset of the insertion slot
 score       !byte 0,0,0   ; 3-byte BCD, low byte first (6 digits)
 killCount   !byte 0
