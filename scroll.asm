@@ -73,6 +73,7 @@ PS_INVULN       = 2
 GS_TITLE = 0
 GS_PLAY  = 1
 GS_OVER  = 2
+OVER_FRAMES = 120              ; frames to display GAME OVER before returning to title
 
 ; --- charge beam ---
 CHARGE_THRESHOLD  = 40         ; frames held before release fires the beam
@@ -205,7 +206,7 @@ ml_not_play
         jsr sound_update
         jmp main_loop
 ml_over
-        ; GS_OVER branch added in Task 5
+        jsr over_update
         jsr sound_update
         jmp main_loop
 
@@ -217,6 +218,7 @@ start_game
         sta score+2
         sta bossState
         sta killCount
+        sta chargeTimer          ; reset charge so a leftover charge can't fire on first release
         jsr fill_front_from_map
         jsr copy_a_to_b
         jsr init_hud_bar
@@ -277,12 +279,9 @@ et_seed lda #24
         dex
         bpl et_seed
         ; clear HUD rows 0-1 in both buffers so title shows only the prompt
+        jsr clear_hud_rows
         lda #0
-        ldx #79
-et_clr  sta BUF_A,x
-        sta BUF_B,x
-        dex
-        bpl et_clr
+        sta BORDER               ; ensure border is always black on title entry
         lda #GS_TITLE
         sta gameState
         rts
@@ -426,7 +425,60 @@ dth_cl  lda label_press,x
         bne dth_cl
 dth_cret
         rts
-dth_col_val !byte 0              ; scratch: blink color for color-RAM pass
+dth_col_val !byte 0              ; scratch: blink color for color-RAM pass (reused by draw_over_hud)
+
+; =====================================================================
+;  GAME OVER STATE ROUTINES
+; =====================================================================
+
+; over_update: per-frame GS_OVER logic — blink GAME OVER text, then
+; return to title after OVER_FRAMES frames.
+over_update
+        inc titleFrame           ; reuse titleFrame for blink cadence
+        lda overTimer            ; first OVER frame: wipe the HUD band here —
+        cmp #OVER_FRAMES         ; on the death frame itself draw_hud still ran
+        bne ou_noclear           ; after pu_gameover and re-stamped the digits
+        jsr clear_hud_rows
+ou_noclear
+        jsr draw_over_hud
+        dec overTimer
+        bne ou_ret
+        jsr enter_title          ; timer expired: back to animated title
+ou_ret  rts
+
+; draw_over_hud: stamp flashing "GAME OVER" in HUD row 1 starting at col 16.
+; Blinks on titleFrame bit 4: red (color 2) when bit=0, off (color 0) when bit=1.
+; Uses $ff-terminated label_gameover; reuses dth_col_val scratch byte.
+draw_over_hud
+        ; --- write chars to both screen buffers, row 1 col 16 ---
+        ldx #0
+doh_txt lda label_gameover,x
+        cmp #$ff
+        beq doh_done
+        sta BUF_A+40+16,x
+        sta BUF_B+40+16,x
+        inx
+        bne doh_txt
+doh_done
+        ; --- determine blink color ---
+        lda titleFrame
+        and #%00010000           ; bit 4: 0 = on, 1 = off
+        beq doh_on
+        lda #0                   ; flash off: black
+        jmp doh_col
+doh_on  lda #2                   ; red
+doh_col sta dth_col_val          ; stash color for color-RAM pass
+        ; --- write color to color RAM ---
+        ldx #0
+doh_cl  lda label_gameover,x
+        cmp #$ff
+        beq doh_cret
+        lda dth_col_val
+        sta COLORRAM+40+16,x
+        inx
+        bne doh_cl
+doh_cret
+        rts
 
 ; =====================================================================
 ;  RASTER IRQ CHAIN
@@ -640,6 +692,18 @@ ihb_sh
 ihb_sh_done
         rts
 
+; clear_hud_rows: blank rows 0-1 in both screen buffers (80 bytes, indices 0-79).
+; Writes char 0 (blank tile) so the HUD band shows only what is explicitly stamped.
+; Called from enter_title (before title prompt) and pu_gameover (before GAME OVER text).
+clear_hud_rows
+        lda #0
+        ldx #79
+chr_lp  sta BUF_A,x
+        sta BUF_B,x
+        dex
+        bpl chr_lp
+        rts
+
 ; ---------------------------------------------------------------------
 ; draw_hud: write 6 score digits (cols 0..5) + lives digit (col 38) to
 ; row 0 of both screen buffers. BCD score; score+2 = leftmost pair.
@@ -738,7 +802,19 @@ pu_explode_end
         jsr player_respawn
         rts
 pu_gameover
-        jsr game_over
+        jsr clear_actors         ; park all 15 virtual sprite slots
+        lda #0
+        sta SPENA                ; blank all hardware sprites (starfield + GAME OVER only)
+        ; (HUD band is wiped on the first over_update frame, not here: draw_hud
+        ;  still runs later in this same frame and would re-stamp the digits)
+        lda #2                   ; red border flash on death
+        sta BORDER
+        lda #20
+        sta flashTimer
+        lda #OVER_FRAMES
+        sta overTimer
+        lda #GS_OVER
+        sta gameState
         rts
 pu_invuln
         jsr pu_normal_play      ; can move/fire while invulnerable
@@ -955,51 +1031,20 @@ cph_ret
         rts
 
 ; ---------------------------------------------------------------------
-; game_over: clear all actors, reset lives + timers, respawn player,
-; flash border red.
+; clear_actors: park all 15 virtual sprite slots (vsActive=0, vsY=255).
+; Called from pu_gameover when entering GS_OVER.
 ; ---------------------------------------------------------------------
-game_over
+clear_actors
         ldx #0
-go_clear
-        cpx #15
-        bcs go_done
+ca_loop cpx #15
+        bcs ca_done
         lda #0
         sta vsActive,x
         lda #255
         sta vsY,x
         inx
-        jmp go_clear
-go_done
-        lda #PLAYER_LIVES
-        sta lives
-        lda #0
-        sta score
-        sta score+1
-        sta score+2
-        lda #0
-        sta bossState
-        sta killCount
-        lda #30
-        sta spawnTimer
-        lda #ENEMY_FIRE_INTERVAL
-        sta enemyFireTimer
-        lda #PS_ALIVE
-        sta playerState
-        lda #60
-        sta player_x
-        lda #0
-        sta player_x_hi
-        lda #120
-        sta player_y
-        lda SPENA
-        ora #%00000001
-        sta SPENA
-        jsr write_player_sprite
-        lda #2                  ; red border flash
-        sta BORDER
-        lda #20
-        sta flashTimer
-        rts
+        jmp ca_loop
+ca_done rts
 
 ; --- clamp player_x to [24,320], player_y to [70,229] ---
 clamp_player
@@ -2751,6 +2796,7 @@ gameState   !byte GS_TITLE     ; GS_TITLE / GS_PLAY / GS_OVER
 playerTimer !byte 0
 lives       !byte 3
 flashTimer  !byte 0        ; border flash countdown (game over)
+overTimer   !byte 0        ; GAME OVER display countdown (OVER_FRAMES -> 0)
 score       !byte 0,0,0   ; 3-byte BCD, low byte first (6 digits)
 killCount   !byte 0
 bossState   !byte 0
