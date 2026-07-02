@@ -84,6 +84,7 @@ SHIP_COLOR_CHARGE = 3          ; cyan  (pulses with SHIP_COLOR_NORMAL while char
 SHIP_COLOR_READY  = 7          ; yellow (steady, charge >= threshold)
 
 LOGO_Y      = 96              ; base raster Y of the title logo band
+SLIDE_SPEED = 4               ; px/frame a title letter glides right during slide-in
 
 ; ---- two screen buffers (both inside VIC bank 0) -----------------------
 BUF_A    = $0400
@@ -278,9 +279,11 @@ et_ptr  lda logoPtrs,x
         lda #%11111111
         sta YXPAND
         sta SPENA
-        ; seed slide-in: all letters start bunched at left edge (X=24)
+        ; seed slide-in: all letters at X=0, hidden behind the left border;
+        ; they enter one at a time (slideIdx counts 7 -> 0, last E first)
         ldx #7
-et_seed lda #24
+        stx slideIdx
+et_seed lda #0
         sta logoCurX,x
         dex
         bpl et_seed
@@ -295,33 +298,27 @@ et_seed lda #24
 ; title_update: per-frame TITLE logic (sprite placement + prompt + start input).
 title_update
         inc titleFrame
-        ; --- slide-in easing: curX += (homeX - curX) >> 2 ---
-        ldx #7
-tu_slide
-        lda logoHomeX,x
-        sec
-        sbc logoCurX,x           ; A = home - cur (>= 0, letters ease right)
-        lsr
-        lsr                      ; delta = (home-cur)/4
-        clc
-        adc logoCurX,x
-        sta logoCurX,x
-        dex
-        bpl tu_slide
-        ; --- Step 1: snap settled letters to homeX at frame 24 ---
+        ; --- sequential slide-in: one letter at a time, last (E) first ---
+        ; letter slideIdx glides from X=0 (behind the left border) to its
+        ; home; on arrival the next letter to the left takes its turn.
+        ; letters not yet started sit at X=0, hidden by the border.
         lda titlePhase
-        bne tu_steady_ok
-        lda titleFrame
-        cmp #24
-        bcc tu_pos_setup         ; still sliding — skip snap
-        ldx #7
-tu_snap lda logoHomeX,x
+        bne tu_pos_setup         ; steady phase: all letters home
+        ldx slideIdx
+        lda logoCurX,x
+        clc
+        adc #SLIDE_SPEED
+        cmp logoHomeX,x
+        bcc tu_sl_store          ; still short of home
+        lda logoHomeX,x          ; arrived: clamp to home...
         sta logoCurX,x
-        dex
-        bpl tu_snap
-        lda #1
+        dec slideIdx             ; ...and start the letter to the left
+        bpl tu_pos_setup
+        lda #1                   ; letter 0 (A) arrived: entrance done
         sta titlePhase
-tu_steady_ok
+        bne tu_pos_setup
+tu_sl_store
+        sta logoCurX,x
 tu_pos_setup
         ; --- precompute logoShift = titleFrame >> 2 (rainbow roll speed) ---
         lda titleFrame
@@ -2786,6 +2783,7 @@ prevSpace   !byte 0        ; 1 if Space was down last frame (edge detect)
 chargeTimer !byte 0        ; frames Space held; >=CHARGE_THRESHOLD -> beam on release
 ; title screen vars
 titlePhase  !byte 0        ; 0 = slide-in entrance, 1 = steady loop
+slideIdx    !byte 7        ; letter currently sliding in (7=last E ... 0=A)
 titleFrame  !byte 0        ; per-frame counter for title animations
 logoShift   !byte 0        ; titleFrame>>2, precomputed each frame before tu_pos
 logoCurX    !fill 8,0      ; current X per logo letter (for slide-in easing)
