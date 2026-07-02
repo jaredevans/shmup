@@ -85,6 +85,7 @@ SHIP_COLOR_READY  = 7          ; yellow (steady, charge >= threshold)
 
 LOGO_Y      = 96              ; base raster Y of the title logo band
 SLIDE_SPEED = 4               ; px/frame a title letter glides right during slide-in
+HS_COUNT    = 5               ; high-score table entries
 
 ; ---- two screen buffers (both inside VIC bank 0) -----------------------
 BUF_A    = $0400
@@ -814,6 +815,7 @@ pu_explode_end
         jsr player_respawn
         rts
 pu_gameover
+        jsr score_insert         ; record the run before tearing the game down
         jsr clear_actors         ; park all 15 virtual sprite slots
         lda #0
         sta SPENA                ; blank all hardware sprites (starfield + GAME OVER only)
@@ -1057,6 +1059,68 @@ ca_loop cpx #15
         inx
         jmp ca_loop
 ca_done rts
+
+; ---------------------------------------------------------------------
+; score_insert: place the finished run's score into the top-5 table.
+; hiScores = 5 entries x 3-byte BCD (lo,mid,hi), entry 0 = rank 1.
+; Strictly-greater wins the slot; a tie ranks below the older equal
+; entry. Sets newRank = 0..4 (inserted rank) or $ff (didn't place).
+; Clobbers A/X/Y. Main-line only (no IRQ-shared state).
+; ---------------------------------------------------------------------
+score_insert
+        lda #$ff
+        sta newRank
+        ldy #0                  ; byte offset of entry under test (0,3,6,9,12)
+        ldx #0                  ; rank index 0..4
+si_find
+        lda score+2             ; compare high BCD byte first
+        cmp hiScores+2,y
+        bcc si_next             ; score < entry -> try the next rank down
+        bne si_insert           ; score > entry -> insert at this rank
+        lda score+1
+        cmp hiScores+1,y
+        bcc si_next
+        bne si_insert
+        lda score+0
+        cmp hiScores+0,y
+        bcc si_next
+        beq si_next             ; full tie -> ranks below the older score
+        bne si_insert           ; low byte greater -> insert
+si_next
+        iny
+        iny
+        iny
+        inx
+        cpx #HS_COUNT
+        bne si_find
+        rts                     ; beaten by all 5 -> newRank stays $ff
+si_insert
+        stx newRank
+        sty siStop
+        ; shift lower ranks down one slot: entry[dst] = entry[dst-3],
+        ; dst walking 12,9,6,... until it reaches the insertion offset
+        ldx #(HS_COUNT-1)*3
+si_shift
+        cpx siStop
+        beq si_store            ; reached the insertion slot -> stop shifting
+        lda hiScores-3+0,x
+        sta hiScores+0,x
+        lda hiScores-3+1,x
+        sta hiScores+1,x
+        lda hiScores-3+2,x
+        sta hiScores+2,x
+        dex
+        dex
+        dex
+        jmp si_shift
+si_store
+        lda score+0             ; Y still holds the insertion offset
+        sta hiScores+0,y
+        lda score+1
+        sta hiScores+1,y
+        lda score+2
+        sta hiScores+2,y
+        rts
 
 ; --- clamp player_x to [24,320], player_y to [70,229] ---
 clamp_player
@@ -2810,6 +2874,9 @@ playerTimer !byte 0
 lives       !byte 3
 flashTimer  !byte 0        ; border flash countdown (game over)
 overTimer   !byte 0        ; GAME OVER display countdown (OVER_FRAMES -> 0)
+hiScores    !fill 15,0     ; top-5 scores, 3-byte BCD each (lo,mid,hi), entry 0 = rank 1
+newRank     !byte $ff      ; rank (0-4) the last run entered at; $ff = didn't place
+siStop      !byte 0        ; score_insert scratch: byte offset of the insertion slot
 score       !byte 0,0,0   ; 3-byte BCD, low byte first (6 digits)
 killCount   !byte 0
 bossState   !byte 0
